@@ -1,0 +1,74 @@
+# docker-compose up  -> поднимает источник, DWH и прогоняет весь конвейер.
+# Все параметры имеют значения по умолчанию; переопределяются через .env (см. .env.example).
+
+services:
+  source-db:
+    image: postgres:17.2-bookworm
+    environment:
+      POSTGRES_USER: ${SOURCE_DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${SOURCE_DB_PASSWORD:-source_dev_password}
+      POSTGRES_DB: ${SOURCE_DB_NAME:-deals_bigdata}
+      N_PRICES: ${N_PRICES:-300000}
+    volumes:
+      - ./sql/source:/source-sql:ro
+      - ./docker/postgres/init-source.sh:/docker-entrypoint-initdb.d/10-init-source.sh:ro
+      - source-data:/var/lib/postgresql/data
+    healthcheck:
+      # TCP-проверка проходит только после завершения init-скриптов (во время init слушается лишь сокет)
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 120
+      start_period: 30s
+
+  dwh-db:
+    image: postgres:17.2-bookworm
+    environment:
+      POSTGRES_USER: ${DWH_DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DWH_DB_PASSWORD:-dwh_dev_password}
+      POSTGRES_DB: ${DWH_DB_NAME:-dwh}
+    ports:
+      - "${DWH_HOST_BIND:-127.0.0.1}:${DWH_HOST_PORT:-5433}:5432"
+    volumes:
+      - dwh-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+
+  pipeline:
+    build:
+      context: .
+      dockerfile: docker/pipeline/Dockerfile
+    depends_on:
+      source-db:
+        condition: service_healthy
+      dwh-db:
+        condition: service_healthy
+    environment:
+      SOURCE_DB_HOST: source-db
+      SOURCE_DB_PORT: 5432
+      SOURCE_DB_NAME: ${SOURCE_DB_NAME:-deals_bigdata}
+      SOURCE_DB_USER: ${SOURCE_DB_USER:-postgres}
+      SOURCE_DB_PASSWORD: ${SOURCE_DB_PASSWORD:-source_dev_password}
+      DWH_DB_HOST: dwh-db
+      DWH_DB_PORT: 5432
+      DWH_DB_NAME: ${DWH_DB_NAME:-dwh}
+      DWH_DB_USER: ${DWH_DB_USER:-postgres}
+      DWH_DB_PASSWORD: ${DWH_DB_PASSWORD:-dwh_dev_password}
+      AS_OF: ${AS_OF:-2026-10-26}
+      ETL_START_DATE: ${ETL_START_DATE:-2023-01-01}
+      ETL_END_DATE: ${ETL_END_DATE:-2027-12-31}
+      RANDOM_SEED: ${RANDOM_SEED:-42}
+      RUN_TESTS: ${RUN_TESTS:-1}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      MODEL_DIR: /app/artifacts
+    volumes:
+      - ml-artifacts:/app/artifacts
+    command: ["all"]
+
+volumes:
+  source-data:
+  dwh-data:
+  ml-artifacts:
